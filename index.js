@@ -21,6 +21,7 @@ const PAGE = {
   GLYPH_SET: '#glyphSet0',
   GLYPH_NAME: '.glyphName',
   DOWNLOAD_BUTTON: '.btn4',
+  DISMISS_STROKE_WARNING_BUTTON: 'button.btn0[ng-click="message.hide()"]',
 };
 const DEFAULT_OPTIONS = {
   outputDir: path.join(__dirname, 'output'),
@@ -124,7 +125,12 @@ async function pipeline(options = {}) {
     await fs.remove(outputDir);
     await fs.ensureDir(outputDir);
 
-    const browser = await puppeteer.launch({ headless: !visible });
+    const browser = await puppeteer.launch({
+      headless: !visible,
+      args: [
+         '--no-proxy-server'
+      ],
+     });
     logger('Started a new chrome instance, going to load icomoon.io.');
     const page = await browser.newPage();
 
@@ -161,7 +167,12 @@ async function pipeline(options = {}) {
     const iconInput = await page.waitForSelector(PAGE.ICON_INPUT);
     const iconPaths = icons.map(getAbsolutePath);
     await iconInput.uploadFile(...iconPaths);
+    
+    await page.waitForSelector(PAGE.DISMISS_STROKE_WARNING_BUTTON, { timeout: 10000, visible: true });
+    await page.click(PAGE.DISMISS_STROKE_WARNING_BUTTON);
+
     await page.waitForSelector(PAGE.FIRST_ICON_BOX);
+    await page.click(PAGE.MENU_BUTTON);
     await page.click(PAGE.SELECT_ALL_BUTTON);
     logger('Uploaded and selected all new icons');
 
@@ -203,6 +214,7 @@ async function pipeline(options = {}) {
     await page.reload();
 
     await page.waitForSelector(PAGE.DOWNLOAD_BUTTON);
+    await page.click(PAGE.DOWNLOAD_BUTTON);
     await page.click(PAGE.DOWNLOAD_BUTTON);
 
     const meta = selection.preferences.fontPref.metadata;
