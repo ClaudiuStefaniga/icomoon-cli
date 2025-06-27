@@ -49,7 +49,7 @@ const checkDownload = dest => new Promise((resolve, reject) => {
   let timeCount = 0;
   const timer = setInterval(async () => {
     timeCount += interval;
-    const exist = await fs.exists(dest);
+    const exist = await fs.pathExists(dest);
     if (!exist) {
       return;
     }
@@ -61,7 +61,8 @@ const checkDownload = dest => new Promise((resolve, reject) => {
       downloadSize = stats.size;
     }
     if (timeCount > DEFAULT_TIMEOUT) {
-      reject('Timeout when download file, please check your network.');
+      clearInterval(timer);
+      reject('Timeout when downloading file, please check your network.');
     }
   }, interval);
 });
@@ -102,6 +103,7 @@ async function pipeline(options = {}) {
       visible = false
     } = options;
     const outputDir = options.outputDir ? getAbsolutePath(options.outputDir) : DEFAULT_OPTIONS.outputDir;
+
     // prepare stage
     logger('Preparing...');
     if (!icons || !icons.length) {
@@ -124,14 +126,19 @@ async function pipeline(options = {}) {
 
     const browser = await puppeteer.launch({ headless: !visible });
     logger('Started a new chrome instance, going to load icomoon.io.');
-    const page = await (await browser).newPage();
-    await page._client.send('Page.setDownloadBehavior', {
+    const page = await browser.newPage();
+
+    // Use official CDP session to set download behavior
+    const client = await page.target().createCDPSession();
+    await client.send('Page.setDownloadBehavior', {
       behavior: 'allow',
       downloadPath: outputDir
     });
-    await page.goto('https://icomoon.io/app/#/select');
+
+    await page.goto('https://icomoon.io/app/#/select', { timeout: 120000 });
     await page.waitForSelector(PAGE.IMPORT_CONFIG_BUTTON);
     logger('Dashboard is visible, going to upload config file');
+
     // remove init set
     await page.click(PAGE.MENU_BUTTON);
     await page.click(PAGE.REMOVE_SET_BUTTON);
@@ -140,6 +147,7 @@ async function pipeline(options = {}) {
     await importInput.uploadFile(absoluteSelectionPath);
     await page.waitForSelector(PAGE.OVERLAY_CONFIRM, { visible: true });
     await page.click(PAGE.OVERLAY_CONFIRM);
+
     const selection = fs.readJSONSync(selectionPath);
     if (selection.icons.length === 0) {
       logger('Selection icons is empty, going to create an empty set');
@@ -147,6 +155,7 @@ async function pipeline(options = {}) {
       await page.waitForSelector(PAGE.NEW_SET_BUTTON, { visible: true });
       await page.click(PAGE.NEW_SET_BUTTON);
     }
+
     logger('Uploaded config, going to upload new icon files');
     await page.click(PAGE.MENU_BUTTON);
     const iconInput = await page.waitForSelector(PAGE.ICON_INPUT);
@@ -155,8 +164,10 @@ async function pipeline(options = {}) {
     await page.waitForSelector(PAGE.FIRST_ICON_BOX);
     await page.click(PAGE.SELECT_ALL_BUTTON);
     logger('Uploaded and selected all new icons');
+
     await page.click(PAGE.GENERATE_LINK);
     await page.waitForSelector(PAGE.GLYPH_SET);
+
     if (names.length) {
       logger('Changed names of icons');
       // sleep to ensure indexedDB is ready
@@ -188,13 +199,12 @@ async function pipeline(options = {}) {
       }, names);
     }
 
-    // sleep to ensure the code was executed
     await sleep(1000);
-    // reload the page let icomoon read latest indexedDB data
     await page.reload();
 
     await page.waitForSelector(PAGE.DOWNLOAD_BUTTON);
     await page.click(PAGE.DOWNLOAD_BUTTON);
+
     const meta = selection.preferences.fontPref.metadata;
     const zipName = meta.majorVersion
       ? `${meta.fontFamily}-v${meta.majorVersion}.${meta.minorVersion || 0}.zip`
@@ -203,18 +213,18 @@ async function pipeline(options = {}) {
     const zipPath = path.join(outputDir, zipName);
     await checkDownload(zipPath);
     logger('Successfully downloaded, going to unzip it.');
+
     await page.close();
+    await browser.close();
+
     // unzip stage
-    extract(zipPath, { dir: outputDir }, async err => {
-      if (err) {
-        throw err;
-      }
-      await fs.remove(zipPath);
-      logger(`Finished. The output directory is ${outputDir}.`);
-      if (whenFinished) {
-        whenFinished({ outputDir });
-      }
-    });
+    await extract(zipPath, { dir: outputDir });
+    await fs.remove(zipPath);
+
+    logger(`Finished. The output directory is ${outputDir}.`);
+    if (whenFinished) {
+      whenFinished({ outputDir });
+    }
   } catch (error) {
     console.error(error);
   }
